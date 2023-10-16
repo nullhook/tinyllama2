@@ -1,21 +1,22 @@
-#include <stdio.h>
 #include <fcntl.h>
 #include "sys/mman.h"
 #include "sys/stat.h"
-#include <stdlib.h>
 #include <assert.h>
-#include <err.h>
 #include <time.h>
+#include <vector>
+#include <iostream>
 
-#include "./compiled/llama2.h"
+extern "C" {
+  #include "compiled/llama2.h"
+}
 
 #define VOCAB_SIZE 32000
 #define MAX_GEN_LEN 1024
 
-int random_choice(float* probs) {
+int random_choice(const std::vector<float>& probs) {
   float r = (float)rand() / (float)RAND_MAX;
   float cumsum2 = 0;
-  for (unsigned int i = 0; i < VOCAB_SIZE; i++) {
+  for (unsigned int i = 0; i < probs.size(); i++) {
     cumsum2 += probs[i];
     if (r < cumsum2) {
       return i;
@@ -27,15 +28,16 @@ int random_choice(float* probs) {
 int main(int argc, char* argv[]) {
   srand(time(NULL));
 
-  float input0[MAX_GEN_LEN] = {1, 15043, 29892, 590, 1024, 338};
-  unsigned int input_len = 5;
+  std::vector<float> input0{1, 15043, 29892, 590, 1024, 338};
+  std::vector<float> outputs(VOCAB_SIZE);
 
-  float outputs[VOCAB_SIZE];
-
-  fprintf(stdout, "loading weights\n");
+  std::cout << "loading weights\n";
   int fd = -1;
-  if ((fd = open("./compiled/weights.bin", O_RDONLY)) == -1)
-    err(1, "open");
+  if ((fd = open("compiled/weights.bin", O_RDONLY)) == -1) {
+    std::cerr << "open\n";
+    return EXIT_FAILURE;
+  }
+
   struct stat fesb;
   fstat(fd, &fesb);
   void *weights = mmap(NULL, fesb.st_size, PROT_READ, MAP_SHARED, fd, 0);
@@ -44,9 +46,9 @@ int main(int argc, char* argv[]) {
   model_t *llama = (model_t *)malloc(sizeof(model_t));
   llama->weights = weights;
 
-  fprintf(stdout, "weights mmaped: %p\n", llama->weights);
+  std::cout << "weights loaded: " << llama->weights << "\n";
   init();
-  fprintf(stdout, "allocated scratch bufs\n");
+  std::cout << "allocated scratch bufs\n";
 
   // run
   int toks_to_gen = 50;
@@ -54,9 +56,9 @@ int main(int argc, char* argv[]) {
 
   unsigned int i = 0;
   while (1) {
-    net(input0, outputs, llama);
+    net(input0.data(), outputs.data(), llama);
     int tok = random_choice(outputs);
-    input0[input_len+1] = tok;
+    input0.push_back(tok);
 
     printf("%i,", tok);
     fflush(stdout);
