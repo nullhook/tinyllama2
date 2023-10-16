@@ -7,7 +7,7 @@
 #include <err.h>
 #include <time.h>
 
-#include "llama2.h"
+#include "./compiled/llama2.h"
 
 #define VOCAB_SIZE 32000
 #define MAX_GEN_LEN 1024
@@ -34,7 +34,7 @@ int main(int argc, char* argv[]) {
 
   fprintf(stdout, "loading weights\n");
   int fd = -1;
-  if ((fd = open("weights.bin", O_RDONLY)) == -1)
+  if ((fd = open("./compiled/weights.bin", O_RDONLY)) == -1)
     err(1, "open");
   struct stat fesb;
   fstat(fd, &fesb);
