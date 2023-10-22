@@ -36,9 +36,11 @@ def compile_net(
   functions, bufs, bufs_to_save, statements, bufnum = {}, {}, {}, [], 0
   buf_offsets = {}
   byte_offset = 0
+  bufs_used = set()
+
   for fxn,args,var_vals in run.jit_cache:
     assert not var_vals, "symbolic shape is not supported"
-    functions[fxn.name] = fxn.prg   # NOTE: this assumes all with the same name are the same
+    functions[fxn.name] = fxn.prg
     cargs = []
     for i,arg in enumerate(args):
       key = id(arg)
@@ -49,8 +51,8 @@ def compile_net(
           bufs[key] = (f"scratch_{bufnum}", arg.size, arg.dtype, key)
           bufnum += 1
           if i > 0:
-            bufs_to_save[bufs[key][0]] = arg   # if first usage of a buffer is not an output, and it's not a special name
-
+            bufs_to_save[bufs[key][0]] = arg
+            # save offsets
             if key not in buf_offsets:
               buf_offsets[key] = byte_offset
               byte_offset += len(arg._buf) * get_byte(arg.dtype)
@@ -62,6 +64,15 @@ def compile_net(
           f"({dtype_to_clang_type(str(bufs[key][2])[7:])}*)(llama->weights + {buf_offsets[key]})"
         )
     statements.append((fxn.name, cargs, fxn.global_size, fxn.local_size))
+
+    for arg in cargs: bufs_used.add(arg)
+
+  # putting bufs back together
+  for (name,size,dtype,key) in bufs.values():
+    if name not in bufs_used:
+      new_name = name if name.endswith("_discard") else name + "_discard"
+      bufs[key] = (new_name, size, dtype, key)
+
   return (
     functions,
     statements,
@@ -71,10 +82,16 @@ def compile_net(
 def jit_model(model, *args) -> Tuple[TinyJit,Dict[int,str]]:
   assert hasattr(model, "forward") or callable(model), "model needs a forward function"
   @TinyJit
-  def run(*args): return (model.forward(*args) if hasattr(model, "forward") else model(*args)).realize()
+  def run(*args):
+    if hasattr(model, "forward"):
+      return (model.forward(*args))
+    else:
+      return (model(*args)).realize()
 
   # twice to run the JIT
-  for _ in range(2): the_output = run(*args)
+  for _ in range(2):
+    the_output = run(*args)
+
   special_names = {}
 
   # hack to put the inputs back
@@ -98,17 +115,19 @@ def export_model_clang(
   cprog = ['#include "llama2.h"']
   cprog.append(CLANG_PROGRAM_HEADER)
 
-  with open(os.path.join("compiled/weights.bin"), "wb") as fw:
-    for _, cl in bufs_to_save.items():
-      fw.write(cl._buffer())
+  # with open(os.path.join("compiled/weights.bin"), "wb") as fw:
+  #   for _, cl in bufs_to_save.items():
+  #     fw.write(cl._buffer())
 
   inputs = ", ".join([f'float* {input}' for input in input_names])
 
+  # declare scratch bufs
   cprog += [
     f"{dtype_to_clang_type(str(dtype)[7:])}* {name};"
     for name,(len,dtype,_key) in bufs.items()
       if name not in ['inputs', 'outputs']
       if name not in input_names
+      if not name.endswith("_discard")
   ]
 
   cprog += list(functions.values())
@@ -117,11 +136,13 @@ def export_model_clang(
     clang_type = dtype_to_clang_type(str(dtype)[7:])
     return f"{name} = ({clang_type}*)malloc({length} * sizeof({clang_type}));"
 
+   # allocate scratch bufs
   cprog += ["void init() {"] + [
     allocate_buf(name, len, dtype)
     for name,(len,dtype,_key) in bufs.items()
       if name not in ['inputs', 'outputs']
       if name not in input_names
+      if not name.endswith("_discard")
   ] + ["}"]
 
   cprog += ["void deinit() {"] + [
@@ -129,6 +150,7 @@ def export_model_clang(
     for name,(len,dtype,_key) in bufs.items()
       if name not in ['inputs', 'outputs']
       if name not in input_names
+      if not name.endswith("_discard")
   ] + ["}"]
 
   cprog += [f"void net({inputs}, float* outputs, model_t* llama) {{"] + [f"{name}({', '.join(args)});" for (name, args, _global_size, _local_size) in statements] + ["}"]
