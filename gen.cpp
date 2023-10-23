@@ -27,14 +27,33 @@ int random_choice(const std::vector<float>& probs) {
 
 int main(int argc, char* argv[]) {
   srand(time(NULL));
+  std::string model_path;
+
+  for (int i=1; i<argc; ++i) {
+    std::string arg = argv[i];
+
+    if (arg == "--model-path" && i + 1 < argc) {
+      model_path = argv[++i];
+    } else {
+      std::cerr << "Unknown argument: " << arg << std::endl;
+      return 1;
+    }
+  }
+
+  if (model_path.empty()) {
+    std::cerr << "Usage: " << argv[0] << " --model-path <path_to_model>" << std::endl;
+    return 1;
+  }
+
+  std::cout << "Model path provided: " << model_path << std::endl;
 
   std::vector<float> input0{1, 15043, 29892, 590, 1024, 338};
   std::vector<float> outputs(VOCAB_SIZE);
 
   std::cout << "loading weights\n";
   int fd = -1;
-  if ((fd = open("compiled/weights.bin", O_RDONLY)) == -1) {
-    std::cerr << "open\n";
+  if ((fd = open(model_path.c_str(), O_RDONLY)) == -1) {
+    std::cerr << "failed to open\n";
     return EXIT_FAILURE;
   }
 
