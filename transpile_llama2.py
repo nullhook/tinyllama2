@@ -1,12 +1,15 @@
 from pathlib import Path
 from model.llama2 import Transformer, AbsmaxQuantizedLinear
 from tinygrad.tensor import Tensor
-from export import export_model
+from tinygrad.helpers import getenv
 from tinygrad.ops import Device
+from export import export_model
 import os
 
-Device.DEFAULT = "CLANG"
-TARGET = "clang"
+print(f"using {Device.DEFAULT} backend")
+target = "metal" if getenv("METAL") or Device.DEFAULT == "METAL" else "clang"
+print(f"with export target: {target}")
+
 TOKENIZER_PATH = "/Users/taher/github/llama-2-7b-hf/tokenizer.model"
 MODEL_PATH = "/Users/taher/github/llama-2-7b-hf/model.safetensors"
 
@@ -26,6 +29,11 @@ MODEL_PARAMS = {
   },
 }
 
+# used for testing jit with simple operations
+class TestModel:
+  def __call__(self, a: Tensor, start_pos: int):
+    return (a * Tensor(3))
+
 if __name__ == "__main__":
   model = Transformer(**MODEL_PARAMS["2"]["7B"]["args"],linear=AbsmaxQuantizedLinear)
   model.load_from_pretrained(model_path=MODEL_PATH, quantize=True)
@@ -37,24 +45,18 @@ if __name__ == "__main__":
   toks = [1, 15043, 29892, 590, 1024, 338]
   start_pos = 0
   prg, inputs, out_size, state = export_model(model,
-                                                 TARGET,
-                                                 Tensor([toks]),
-                                                 start_pos)
-  cprog = [prg]
+                                              target,
+                                              Tensor([toks]),
+                                              start_pos)
 
-  # inputs = "\n".join([f"float {inp}[{size}];" for inp,size in inputs.items()])
-  # cprog.append(inputs)
-  # cprog.append(f"float outputs[{out_size}];")
-  cheader = ["#include <stdlib.h>"]
-  cheader.append("typedef struct { void* weights; } model_t;")
-  cheader.append("void net(float* input0, float* outputs, model_t* llama);")
-  cheader.append("void init();")
-  cheader.append("void deinit();")
-
-  f = open("compiled/llama2.c", "w")
-  f.write("\n".join(cprog) + "\n")
-
-  f = open("compiled/llama2.h", "w")
-  f.write("\n".join(cheader) + "\n")
-
-  # print('\n'.join(cprog))
+  if (target == "clang"):
+    cprog = [prg]
+    f = open("compiled/llama2.c", "w")
+    f.write("\n".join(cprog) + "\n")
+    cheader = ["#include <stdlib.h>"]
+    cheader.append("typedef struct { void* weights; } model_t;")
+    cheader.append("void net(float* input0, float* outputs, model_t* llama);")
+    cheader.append("void init();")
+    cheader.append("void deinit();")
+    f = open("compiled/llama2.h", "w")
+    f.write("\n".join(cheader) + "\n")

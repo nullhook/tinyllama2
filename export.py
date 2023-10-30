@@ -1,3 +1,4 @@
+import os, subprocess, pathlib, ctypes
 from typing import Tuple, Dict, List
 from tinygrad.helpers import DType, dtypes
 from tinygrad.tensor import Device, Tensor
@@ -5,36 +6,29 @@ from tinygrad.jit import TinyJit
 from tinygrad.nn.state import get_state_dict
 from tinygrad.codegen.linearizer import Linearizer
 from tinygrad.runtime.ops_clang import renderer
+from tinygrad.helpers import getenv
 from tqdm import tqdm
 import json
 import os
 
-def dtype_to_clang_type(s: str):
-  if (s == "int8"):
-    return "int8_t"
-  if (s == "float32"):
-    return "float"
-  return s
-
-def get_byte(dtype: DType):
-  if dtype == dtypes.float:
-    return 4
-  if dtype == dtypes.float16:
-    return 2
-  if dtype == dtypes.int8:
-    return 1
+clang_type_map = {dtypes.float32: "float", dtypes.float16: "half", dtypes.int8: "int8_t"}
+dtype_size = { dtypes.float: 4, dtypes.float16: 2, dtypes.int8: 1 }
+def convert_dtype(dt: DType): return clang_type_map[dt] if not None else dt
 
 def compile_net(
     run:TinyJit,
-    special_names:Dict[int,str]
+    special_names:Dict[int,str],
+    target: str
   ) -> Tuple[
     Dict[str,str],
     List[Tuple[str,List[str],List[int]]],
     Dict[str,Tuple[int,DType,int]],
-    Dict[str,Tensor]
+    Dict[str,Tensor],
+    Dict
   ]:
   functions, bufs, bufs_to_save, statements, bufnum = {}, {}, {}, [], 0
   buf_offsets = {}
+  buf_len_from_offset = {}
   byte_offset = 0
   bufs_used = set()
 
@@ -54,14 +48,16 @@ def compile_net(
             bufs_to_save[bufs[key][0]] = arg
             # save offsets
             if key not in buf_offsets:
+              buf_len = arg._buf.length() if target == "metal" else len(arg._buf)
               buf_offsets[key] = byte_offset
-              byte_offset += len(arg._buf) * get_byte(arg.dtype)
+              buf_len_from_offset[byte_offset] = buf_len
+              byte_offset += len(arg._buf) * dtype_size[arg.dtype]
 
       if key in special_names or bufs[key][0] not in bufs_to_save:
         cargs.append(bufs[key][0])
       else:
         cargs.append(
-          f"({dtype_to_clang_type(str(bufs[key][2])[7:])}*)(llama->weights + {buf_offsets[key]})"
+          f"({convert_dtype(bufs[key][2])}*)(llama->weights + {buf_offsets[key]})"
         )
     statements.append((fxn.name, cargs, fxn.global_size, fxn.local_size))
 
@@ -76,7 +72,9 @@ def compile_net(
   return (
     functions,
     statements,
-    {name:(size, dtype, key) for (name,size,dtype,key) in bufs.values()}, bufs_to_save
+    {name:(size, dtype, key) for (name,size,dtype,key) in bufs.values()},
+    bufs_to_save,
+    buf_len_from_offset
   )
 
 def jit_model(model, *args) -> Tuple[TinyJit,Dict[int,str]]:
@@ -115,15 +113,15 @@ def export_model_clang(
   cprog = ['#include "llama2.h"']
   cprog.append(CLANG_PROGRAM_HEADER)
 
-  # with open(os.path.join("compiled/weights.bin"), "wb") as fw:
-  #   for _, cl in bufs_to_save.items():
-  #     fw.write(cl._buffer())
+  with open(os.path.join("compiled/weights.bin"), "wb") as fw:
+    for _, cl in bufs_to_save.items():
+      fw.write(cl._buffer())
 
   inputs = ", ".join([f'float* {input}' for input in input_names])
 
   # declare scratch bufs
   cprog += [
-    f"{dtype_to_clang_type(str(dtype)[7:])}* {name};"
+    f"{convert_dtype(dtype)}* {name};"
     for name,(len,dtype,_key) in bufs.items()
       if name not in ['inputs', 'outputs']
       if name not in input_names
@@ -133,7 +131,7 @@ def export_model_clang(
   cprog += list(functions.values())
 
   def allocate_buf(name, length, dtype):
-    clang_type = dtype_to_clang_type(str(dtype)[7:])
+    clang_type = convert_dtype(dtype)
     return f"{name} = ({clang_type}*)malloc({length} * sizeof({clang_type}));"
 
    # allocate scratch bufs
@@ -157,21 +155,64 @@ def export_model_clang(
 
   return '\n'.join(cprog)
 
+def export_model_metal(
+    functions:Dict[str,str],
+    statements:Dict[str,Tuple[str,int,int]],
+    bufs:Dict[str,Tuple[str,int,int]],
+    bufs_to_save:Dict[str,Tensor],
+    input_names:List[str],
+    buf_len_from_offset: Dict
+  ) -> str:
+  kernel_code = '\n'.join(list(functions.values()))
+  metal_air = subprocess.check_output(['xcrun', '-sdk', 'macosx', 'metal', '-x', 'metal', '-c', '-', '-o', '-'], input=kernel_code.encode('utf-8'))
+  metal_lib = subprocess.check_output(['xcrun', '-sdk', 'macosx', 'metallib', '-', '-o', '-'], input=metal_air)
+  with open(os.path.join("default.metallib"), "wb") as fw:
+    fw.write(metal_lib)
+
+  metal_prg = []
+
+  metal_prg += [
+    f"MTL::Buffer* {name};"
+    for name,(len,dtype,_key) in bufs.items()
+    if not name.endswith("_discard")
+  ]
+
+  metal_prg += ["void init_buffers(MTL::Device* device) {"] + [
+    f" {name} = device->newBuffer({len}, MTL::ResourceStorageModeManaged);"
+    for name, (len,dtype,key) in bufs.items()
+  ] + ["}"]
+
+  def set_metal_buffer(i: int, arg: str):
+    if arg.startswith("("):
+      buf_len = buf_len_from_offset[int(arg.split('+')[-1].replace(')', ''))]
+      return f" encoder->setBytes({arg}, {buf_len}, {i});\n"
+    return f" encoder->setBuffer({arg}, {i});\n"
+
+  metal_prg += (
+    ["void compile_shaders_and_encode(MTL::Device* device, MTL::Library* library, MTL::ComputeCommandEncoder* encoder, model_t* llama) {"] +
+    [f' MTL::Function* {name} = library->newFunction(NS::String::string("{name}", NS::StringEncoding::UTF8StringEncoding));\n'
+    f" NS::Error* {name}_err = nullptr;\n"
+    f" MTL::ComputePipelineState* {name}_pso = device->newComputePipelineState({name}, &{name}_err);\n"
+    f" encoder->setComputePipelineState({name}_pso);\n"
+    + "".join([set_metal_buffer(i, arg) for i,arg in enumerate(args)]) +
+    f" encoder->dispatchThreadgroups(MTL::Size({','.join([str(x) for x in _global_size])}), MTL::Size({','.join([str(x) for x in _local_size])}));\n"
+    for(name, args, _global_size, _local_size) in statements]
+    + ["}"]
+  )
+
+  return metal_prg
+
 def export_model(model, target:str, *inputs):
   run, special_names = jit_model(model, *inputs)
-  functions, statements, bufs, bufs_to_save = compile_net(run, special_names)
+  functions, statements, bufs, bufs_to_save, buf_len_from_offset = compile_net(run, special_names, target)
   state = get_state_dict(model)
   weight_names = {id(x.lazydata.realized): name for name, x in state.items()}
   input_names = [name for _,name in special_names.items() if "input" in name]
   prg = ""
   if target == "clang":
-    prg = export_model_clang(
-        functions,
-        statements,
-        bufs,
-        bufs_to_save,
-        input_names
-      )
+    prg = export_model_clang(functions, statements, bufs, bufs_to_save, input_names)
+  elif target == "metal":
+    prg = export_model_metal(functions, statements, bufs, bufs_to_save, input_names, buf_len_from_offset)
   else:
     prg = json.dumps({
       "backend": Device.DEFAULT,
