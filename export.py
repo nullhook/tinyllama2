@@ -62,7 +62,7 @@ def compile_net(
         cargs.append(bufs[key][0])
       else:
         cargs.append(
-          f"({convert_dtype(bufs[key][2])}*)(llama->weights + {buf_offsets[key]})"
+          f"({convert_dtype(bufs[key][2])}*)(llama->weights) + {buf_offsets[key]}"
         )
     statements.append((fxn.name, cargs, fxn.global_size, fxn.local_size))
 
