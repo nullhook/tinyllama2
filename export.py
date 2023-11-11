@@ -15,6 +15,11 @@ clang_type_map = {dtypes.float32: "float", dtypes.float16: "half", dtypes.int8: 
 dtype_size = { dtypes.float: 4, dtypes.float16: 2, dtypes.int8: 1 }
 def convert_dtype(dt: DType): return clang_type_map[dt] if not None else dt
 
+def save_bufs_to_binary(bufs, filename="weights"):
+  with open(os.path.join(f"compiled/{filename}.bin"), "wb") as fw:
+    for _, cl in bufs.items():
+      fw.write(cl._buffer())
+
 def compile_net(
     run:TinyJit,
     special_names:Dict[int,str],
@@ -51,7 +56,7 @@ def compile_net(
               buf_len = arg._buf.length() if target == "metal" else len(arg._buf)
               buf_offsets[key] = byte_offset
               buf_len_from_offset[byte_offset] = buf_len
-              byte_offset += len(arg._buf) * dtype_size[arg.dtype]
+              byte_offset += buf_len * dtype_size[arg.dtype]
 
       if key in special_names or bufs[key][0] not in bufs_to_save:
         cargs.append(bufs[key][0])
@@ -113,9 +118,7 @@ def export_model_clang(
   cprog = ['#include "llama2.h"']
   cprog.append(CLANG_PROGRAM_HEADER)
 
-  with open(os.path.join("compiled/weights.bin"), "wb") as fw:
-    for _, cl in bufs_to_save.items():
-      fw.write(cl._buffer())
+  save_bufs_to_binary(bufs_to_save)
 
   inputs = ", ".join([f'float* {input}' for input in input_names])
 
@@ -171,36 +174,55 @@ def export_model_metal(
 
   metal_prg = []
 
+  save_bufs_to_binary(bufs_to_save, filename="weights_metal")
+
   metal_prg += [
     f"MTL::Buffer* {name};"
     for name,(len,dtype,_key) in bufs.items()
     if not name.endswith("_discard")
   ]
 
-  metal_prg += ["void init_buffers(MTL::Device* device) {"] + [
-    f" {name} = device->newBuffer({len}, MTL::ResourceStorageModeManaged);"
-    for name, (len,dtype,key) in bufs.items()
-  ] + ["}"]
+  fns = set(entry[0] for entry in statements)
 
-  def set_metal_buffer(i: int, arg: str):
+  metal_prg += [
+    f"MTL::ComputePipelineState* {fn_name}_pso;"
+    for fn_name in list(fns)
+  ]
+
+  metal_prg += ["void init(MTL::Device* device, MTL::Library* library) {"] + [
+    f" {name} = device->newBuffer({len} * sizeof({clang_type_map[dtype]}), MTL::ResourceStorageModeManaged);"
+    for name, (len,dtype,key) in bufs.items()
+    if not name.endswith("_discard")
+  ] + [f' MTL::Function* {fn_name} = library->newFunction(NS::String::string("{fn_name}", NS::StringEncoding::UTF8StringEncoding));\n'
+  f" NS::Error* {fn_name}_err = nullptr;"
+  f" {fn_name}_pso = device->newComputePipelineState({fn_name}, &{fn_name}_err);\n\n" for fn_name in fns] + ["}"]
+
+  created_buffers = set()
+  def set_metal_buffer(i: int, arg: str, fn_name: str):
     if arg.startswith("("):
-      buf_len = buf_len_from_offset[int(arg.split('+')[-1].replace(')', ''))]
-      return f" encoder->setBytes({arg}, {buf_len}, {i});\n"
-    return f" encoder->setBuffer({arg}, {i});\n"
+      s = arg.split('+')[0]
+      dtype = arg.split('+')[0][s.find("(")+1:s.find("*)")]
+      buf_offset = int(arg.split('+')[-1].replace(')', ''))
+      buf_len = buf_len_from_offset[buf_offset]
+      weight_name = f"{fn_name}_weights_{buf_offset}"
+
+      if weight_name not in created_buffers:
+        created_buffers.add(weight_name)
+        return (f" MTL::Buffer* {weight_name} = device->newBuffer({arg}, {buf_len} * sizeof({dtype}), MTL::ResourceStorageModeManaged);\n" +
+                f" encoder->setBuffer({weight_name}, 0, {i});\n")
+      else:
+        return f" encoder->setBuffer({weight_name}, 0, {i});\n"
+    return f" encoder->setBuffer({arg}, 0, {i});\n"
 
   metal_prg += (
-    ["void compile_shaders_and_encode(MTL::Device* device, MTL::Library* library, MTL::ComputeCommandEncoder* encoder, model_t* llama) {"] +
-    [f' MTL::Function* {name} = library->newFunction(NS::String::string("{name}", NS::StringEncoding::UTF8StringEncoding));\n'
-    f" NS::Error* {name}_err = nullptr;\n"
-    f" MTL::ComputePipelineState* {name}_pso = device->newComputePipelineState({name}, &{name}_err);\n"
-    f" encoder->setComputePipelineState({name}_pso);\n"
-    + "".join([set_metal_buffer(i, arg) for i,arg in enumerate(args)]) +
+    ["void encode(MTL::ComputeCommandEncoder* encoder, MTL::Device* device, model_t* llama) {"] +
+    [f" encoder->setComputePipelineState({name}_pso);\n"
+    + "".join([set_metal_buffer(i, arg, name) for i,arg in enumerate(args)]) +
     f" encoder->dispatchThreadgroups(MTL::Size({','.join([str(x) for x in _global_size])}), MTL::Size({','.join([str(x) for x in _local_size])}));\n"
-    for(name, args, _global_size, _local_size) in statements]
-    + ["}"]
+    for(name, args, _global_size, _local_size) in statements] +
+    [" encoder->endEncoding();"] + ["}"]
   )
-
-  return metal_prg
+  return '\n'.join(metal_prg)
 
 def export_model(model, target:str, *inputs):
   run, special_names = jit_model(model, *inputs)

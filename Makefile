@@ -3,6 +3,9 @@ export TARGET=aarch64-linux-android
 export API=34
 export LD=$(TOOLCHAIN)/bin/ld
 
+# export METAL_CAPTURE_ENABLED=1
+# export METAL_DEVICE_WRAPPER_TYPE=1
+# export MTL_DEBUG_LAYER=5
 
 llama2:
 	clang++ -std=c++17 -c gen.cpp -o gen.o
@@ -17,8 +20,10 @@ llama2-aarch64-android:
 	$(TOOLCHAIN)/bin/$(TARGET)$(API)-clang -O2 -c compiled/llama2.c -o llama2.o
 	$(TOOLCHAIN)/bin/$(TARGET)$(API)-clang++ -static-libstdc++ -o llama2-aarch64-android gen.o llama2.o
 
-clean:
-	rm -rf *.o
+llama2-metal:
+	clang++ -std=c++17 -g -framework Metal -framework Foundation -framework QuartzCore gen-metal.cpp -o llama2-metal
 
+clean:
+	rm -rf *.o llama2 llama2-metal
 
 .PHONY: llama2

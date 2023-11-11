@@ -6,9 +6,9 @@ from tinygrad.ops import Device
 from export import export_model
 import os
 
-print(f"using {Device.DEFAULT} backend")
+print(f"// using {Device.DEFAULT} backend")
 target = "metal" if getenv("METAL") or Device.DEFAULT == "METAL" else "clang"
-print(f"with export target: {target}")
+print(f"// with export target: {target}")
 
 TOKENIZER_PATH = "/Users/taher/github/llama-2-7b-hf/tokenizer.model"
 MODEL_PATH = "/Users/taher/github/llama-2-7b-hf/model.safetensors"
@@ -36,7 +36,8 @@ class TestModel:
 
 if __name__ == "__main__":
   model = Transformer(**MODEL_PARAMS["2"]["7B"]["args"],linear=AbsmaxQuantizedLinear)
-  model.load_from_pretrained(model_path=MODEL_PATH, quantize=True)
+  # model.load_from_pretrained(model_path=MODEL_PATH, quantize=True)
+  # model = TestModel()
 
   if not os.path.exists("compiled"):
     os.mkdir("compiled")
@@ -53,6 +54,7 @@ if __name__ == "__main__":
     cprog = [prg]
     f = open("compiled/llama2.c", "w")
     f.write("\n".join(cprog) + "\n")
+
     cheader = ["#include <stdlib.h>"]
     cheader.append("typedef struct { void* weights; } model_t;")
     cheader.append("void net(float* input0, float* outputs, model_t* llama);")
@@ -60,3 +62,7 @@ if __name__ == "__main__":
     cheader.append("void deinit();")
     f = open("compiled/llama2.h", "w")
     f.write("\n".join(cheader) + "\n")
+  else:
+    cprog = ["typedef struct { void* weights; } model_t;"]
+    cprog += [prg]
+    print("\n".join(cprog))
