@@ -53,7 +53,7 @@ def compile_net(
             bufs_to_save[bufs[key][0]] = arg
             # save offsets
             if key not in buf_offsets:
-              buf_len = arg._buf.length() if target == "metal" else len(arg._buf)
+              buf_len = arg.size
               buf_offsets[key] = byte_offset
               buf_len_from_offset[byte_offset] = buf_len
               byte_offset += buf_len * dtype_size[arg.dtype]
@@ -172,9 +172,9 @@ def export_model_metal(
   with open(os.path.join("default.metallib"), "wb") as fw:
     fw.write(metal_lib)
 
-  metal_prg = []
-
   save_bufs_to_binary(bufs_to_save, filename="weights_metal")
+
+  metal_prg = []
 
   metal_prg += [
     f"MTL::Buffer* {name};"

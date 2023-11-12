@@ -36,7 +36,7 @@ class TestModel:
 
 if __name__ == "__main__":
   model = Transformer(**MODEL_PARAMS["2"]["7B"]["args"],linear=AbsmaxQuantizedLinear)
-  # model.load_from_pretrained(model_path=MODEL_PATH, quantize=True)
+  model.load_from_pretrained(model_path=MODEL_PATH, quantize=True)
   # model = TestModel()
 
   if not os.path.exists("compiled"):

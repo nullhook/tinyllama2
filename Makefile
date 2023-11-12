@@ -8,9 +8,9 @@ export LD=$(TOOLCHAIN)/bin/ld
 # export MTL_DEBUG_LAYER=5
 
 llama2:
-	clang++ -std=c++17 -c gen.cpp -o gen.o
-	clang -O2 -c compiled/llama2.c -o llama2.o
-	clang++ -o llama2 gen.o llama2.o
+	clang++ -g -std=c++17 -c gen.cpp -o gen.o
+	clang -O2 -g -c compiled/llama2.c -o llama2.o
+	clang++ -g -o llama2 gen.o llama2.o
 
 # https://stackoverflow.com/questions/55184167/clang-linking-so-library-libc-shared-so
 # https://developer.android.com/ndk/guides/other_build_systems
@@ -24,6 +24,6 @@ llama2-metal:
 	clang++ -std=c++17 -g -framework Metal -framework Foundation -framework QuartzCore gen-metal.cpp -o llama2-metal
 
 clean:
-	rm -rf *.o llama2 llama2-metal
+	rm -rf *.o *.dSYM llama2 llama2-metal
 
 .PHONY: llama2
