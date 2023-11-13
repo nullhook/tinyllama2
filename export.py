@@ -11,7 +11,7 @@ from tqdm import tqdm
 import json
 import os
 
-clang_type_map = {dtypes.float32: "float", dtypes.float16: "half", dtypes.int8: "int8_t"}
+clang_type_map = {dtypes.float32: "float", dtypes.float16: "half", dtypes.int8: "char"}
 dtype_size = { dtypes.float: 4, dtypes.float16: 2, dtypes.int8: 1 }
 def convert_dtype(dt: DType): return clang_type_map[dt] if not None else dt
 
@@ -62,7 +62,7 @@ def compile_net(
         cargs.append(bufs[key][0])
       else:
         cargs.append(
-          f"({convert_dtype(bufs[key][2])}*)(llama->weights) + {buf_offsets[key]}"
+          f"({convert_dtype(bufs[key][2])}*)((char*)llama->weights + {buf_offsets[key]})"
         )
     statements.append((fxn.name, cargs, fxn.global_size, fxn.local_size))
 

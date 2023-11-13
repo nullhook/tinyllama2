@@ -9,7 +9,7 @@ export LD=$(TOOLCHAIN)/bin/ld
 
 llama2:
 	clang++ -g -std=c++17 -c gen.cpp -o gen.o
-	clang -O2 -g -c compiled/llama2.c -o llama2.o
+	clang -std=c2x -O2 -g -c compiled/llama2.c -o llama2.o
 	clang++ -g -o llama2 gen.o llama2.o
 
 # https://stackoverflow.com/questions/55184167/clang-linking-so-library-libc-shared-so

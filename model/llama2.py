@@ -151,7 +151,7 @@ class Transformer:
   def load_from_pretrained(self, model_path, quantize=False):
     model_path = str(model_path)
 
-    print("quant enable: ", quantize)
+    print("// quant enable: ", quantize)
 
     if(not model_path.endswith('.safetensors')):
       print("this prog only accepts .safetensor model file")
