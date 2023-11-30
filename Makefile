@@ -6,6 +6,7 @@ export LD=$(TOOLCHAIN)/bin/ld
 # export METAL_CAPTURE_ENABLED=1
 # export METAL_DEVICE_WRAPPER_TYPE=1
 # export MTL_DEBUG_LAYER=5
+# -target x86_64-apple-macos13
 
 llama2:
 	clang++ -g -std=c++17 -c gen.cpp -o gen.o
