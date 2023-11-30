@@ -1,0 +1,3 @@
+[submodule "lib/tinygrad"]
+	path = lib/tinygrad
+	url = https://github.com/nullhook/tinygrad-mod.git
