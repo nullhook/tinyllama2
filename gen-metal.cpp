@@ -6,7 +6,7 @@
 #define NS_PRIVATE_IMPLEMENTATION
 #define CA_PRIVATE_IMPLEMENTATION
 #define MTL_PRIVATE_IMPLEMENTATION
-#include "lib/Metal.hpp"
+#include "frameworks/Metal.hpp"
 
 #define max(x,y) ((x>y)?x:y)
 #define int64 long
